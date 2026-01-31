@@ -6,8 +6,9 @@ authors = [
     {name = "Iztok Fister Jr.",email = "iztok@iztok.dev"}
 ]
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = "<4.0,>=3.12"
 dependencies = [
+    "tcxreader (>=0.4.11,<0.5.0)"
 ]
 
 [tool.poetry]
