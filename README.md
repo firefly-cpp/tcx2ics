@@ -9,6 +9,26 @@ The calendar event contains:
 - total duration
 - total distance
 
+
+## 📦 Installation
+
+### pip
+
+Install tcx2ics with pip:
+
+```sh
+pip install tcx2ics
+```
+
+## 🚀 Examples
+
+### Basic example
+
+```python
+from tcx2ics import Tcx2Ics
+Tcx2Ics().convert("15.tcx", "workout.ics")
+```
+
 ## 🔑 License
 
 This package is distributed under the MIT License. This license can be found online at <http://www.opensource.org/licenses/MIT>.
