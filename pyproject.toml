@@ -1,7 +1,7 @@
 [project]
 name = "tcx2ics"
 version = "0.1.0"
-description = ""
+description = "Generate ICS calendar events from TCX workout files"
 authors = [
     {name = "Iztok Fister Jr.",email = "iztok@iztok.dev"}
 ]
