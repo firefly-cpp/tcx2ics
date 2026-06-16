@@ -1,3 +1,3 @@
-from .tcx2ics import Tcx2Ics
+from .tcx2ics import Tcx2Ics, TcxData
 
-__all__ = ["Tcx2Ics"]
+__all__ = ["Tcx2Ics", "TcxData"]
