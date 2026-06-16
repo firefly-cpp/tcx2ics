@@ -1,0 +1,49 @@
+name: tcx2ics
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.12', '3.13']
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install poetry
+      run: pipx install poetry
+
+    - name: Configure poetry
+      run: poetry config virtualenvs.in-project true
+
+    - name: Cache virtualenv
+      uses: actions/cache@v3
+      id: cache
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+
+    - name: Ensure cache is healthy
+      if: steps.cache.outputs.cache-hit == 'true'
+      run: timeout 10s poetry run pip --version || rm -rf .venv
+
+    - name: Install dependencies
+      run: poetry install
+
+    - name: Run tests
+      run: poetry run pytest
