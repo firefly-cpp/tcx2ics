@@ -3,8 +3,14 @@
   <Activities>
     <Activity Sport="Biking">
       <Id>2023-06-01T07:00:00Z</Id>
-      <Lap StartTime="2023-06-01T07:00:00Z" TotalTimeSeconds="3600">
+      <Lap StartTime="2023-06-01T07:00:00Z">
+        <TotalTimeSeconds>3600</TotalTimeSeconds>
         <DistanceMeters>30000</DistanceMeters>
+        <Track>
+          <Trackpoint><Time>2023-06-01T07:00:00Z</Time><Position><LatitudeDegrees>46.500</LatitudeDegrees><LongitudeDegrees>15.600</LongitudeDegrees></Position><DistanceMeters>0</DistanceMeters></Trackpoint>
+          <Trackpoint><Time>2023-06-01T07:30:00Z</Time><Position><LatitudeDegrees>46.510</LatitudeDegrees><LongitudeDegrees>15.610</LongitudeDegrees></Position><DistanceMeters>15000</DistanceMeters></Trackpoint>
+          <Trackpoint><Time>2023-06-01T08:00:00Z</Time><Position><LatitudeDegrees>46.520</LatitudeDegrees><LongitudeDegrees>15.620</LongitudeDegrees></Position><DistanceMeters>30000</DistanceMeters></Trackpoint>
+        </Track>
       </Lap>
     </Activity>
   </Activities>
