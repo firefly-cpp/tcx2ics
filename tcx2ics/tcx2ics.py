@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
 
-TCX_NS = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
+from tcxreader.tcxreader import TCXReader
+
 
 @dataclass
 class TcxData:
@@ -23,10 +24,6 @@ class TcxData:
 class Tcx2Ics:
     """Convert a TCX workout file to an ICS calendar event."""
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def convert(self, tcx_path: str, ics_path: str) -> None:
         """
         Parse *tcx_path* and write a calendar event to *ics_path*.
@@ -36,7 +33,9 @@ class Tcx2Ics:
         FileNotFoundError
             If *tcx_path* does not exist on disk.
         ValueError
-            If *tcx_path* does not have a .tcx extension.
+            If *tcx_path* does not have a .tcx extension, is not
+            well-formed XML, or lacks the timing data needed to build
+            an event.
         """
         self._validate_input(tcx_path)
         data = self._parse(tcx_path)
@@ -51,14 +50,12 @@ class Tcx2Ics:
         FileNotFoundError
             If *tcx_path* does not exist on disk.
         ValueError
-            If *tcx_path* does not have a .tcx extension.
+            If *tcx_path* does not have a .tcx extension, is not
+            well-formed XML, or lacks the timing data needed to build
+            an event.
         """
         self._validate_input(tcx_path)
         return self._parse(tcx_path)
-
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _validate_input(tcx_path: str) -> None:
@@ -74,64 +71,36 @@ class Tcx2Ics:
                 "Check that the path is correct."
             )
 
-    # ------------------------------------------------------------------
-    # Parsing
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _ns(tag: str) -> str:
-        return f"{{{TCX_NS}}}{tag}"
-
     def _parse(self, tcx_path: str) -> TcxData:
-        tree = ET.parse(tcx_path)
-        root = tree.getroot()
 
-        activity = root.find(f".//{self._ns('Activity')}")
-        if activity is None:
-            raise ValueError("No <Activity> element found in TCX file.")
+        try:
+            exercise = TCXReader().read(tcx_path, only_gps=False)
+        except ET.ParseError as exc:
+            raise ValueError(f"Malformed TCX/XML file: {exc}") from exc
 
-        sport = activity.get("Sport", "Workout")
+        if exercise.start_time is None:
+            raise ValueError(
+                "TCX file has no usable trackpoint timing "
+                "(need at least three timed trackpoints)."
+            )
 
-        # Start time from the first Lap's StartTime attribute
-        lap = activity.find(self._ns("Lap"))
-        if lap is None:
-            raise ValueError("No <Lap> element found in TCX file.")
-
-        start_time_str = lap.get("StartTime") or ""
-        start_time = self._parse_datetime(start_time_str)
-
-        total_seconds = float(
-            self._find_text(lap, "TotalTimeSeconds") or "0"
-        )
-
-        distance_m = float(
-            self._find_text(lap, "DistanceMeters") or "0"
-        )
-        distance_km = distance_m / 1000.0
+        start_time = self._ensure_utc(exercise.start_time)
+        duration_seconds = float(exercise.duration or 0.0)
+        distance_km = float(exercise.distance or 0.0) / 1000.0
+        sport = exercise.activity_type or "Workout"
 
         return TcxData(
             start_time=start_time,
-            duration_seconds=total_seconds,
+            duration_seconds=duration_seconds,
             distance_km=distance_km,
             sport=sport,
         )
 
-    def _find_text(self, parent: ET.Element, tag: str) -> str | None:
-        el = parent.find(self._ns(tag))
-        return el.text if el is not None else None
-
     @staticmethod
-    def _parse_datetime(value: str) -> datetime:
-        """Parse ISO-8601 string to timezone-aware datetime."""
-        value = value.rstrip("Z")
-        dt = datetime.fromisoformat(value)
+    def _ensure_utc(dt: datetime) -> datetime:
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            return dt.replace(tzinfo=timezone.utc)
         return dt
-
-    # ------------------------------------------------------------------
-    # ICS output
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _fmt_dt(dt: datetime) -> str:
@@ -139,16 +108,43 @@ class Tcx2Ics:
         utc = dt.astimezone(timezone.utc)
         return utc.strftime("%Y%m%dT%H%M%SZ")
 
-    def _write_ics(self, data: TcxData, ics_path: str) -> None:
-        summary = (
-            f"{data.sport} — "
-            f"{data.distance_km:.1f} km, "
-            f"{int(data.duration_seconds // 60)} min"
+    @staticmethod
+    def _escape_text(value: str) -> str:
+        """Escape a value for an iCalendar TEXT field (RFC 5545 §3.3.11)."""
+        return (
+            value.replace("\\", "\\\\")
+            .replace(";", "\\;")
+            .replace(",", "\\,")
+            .replace("\n", "\\n")
         )
-        description = (
-            f"Sport: {data.sport}\\n"
-            f"Distance: {data.distance_km:.2f} km\\n"
-            f"Duration: {int(data.duration_seconds // 60)} min"
+
+    @staticmethod
+    def _fold_line(line: str) -> str:
+        if len(line.encode("utf-8")) <= 75:
+            return line
+        chunks: list[bytes] = []
+        current = b""
+        for ch in line:
+            ch_bytes = ch.encode("utf-8")
+
+            limit = 75 if not chunks else 74
+            if len(current) + len(ch_bytes) > limit:
+                chunks.append(current)
+                current = ch_bytes
+            else:
+                current += ch_bytes
+        chunks.append(current)
+        return "\r\n ".join(chunk.decode("utf-8") for chunk in chunks)
+
+    def _write_ics(self, data: TcxData, ics_path: str) -> None:
+        minutes = int(data.duration_seconds // 60)
+        summary = self._escape_text(
+            f"{data.sport} — {data.distance_km:.1f} km, {minutes} min"
+        )
+        description = self._escape_text(
+            f"Sport: {data.sport}\n"
+            f"Distance: {data.distance_km:.2f} km\n"
+            f"Duration: {minutes} min"
         )
         uid = str(uuid.uuid4())
         now = self._fmt_dt(datetime.now(tz=timezone.utc))
@@ -170,5 +166,6 @@ class Tcx2Ics:
             "END:VCALENDAR",
         ]
 
+        folded = [self._fold_line(line) for line in lines]
         with open(ics_path, "w", encoding="utf-8") as fh:
-            fh.write("\r\n".join(lines) + "\r\n")
+            fh.write("\r\n".join(folded) + "\r\n")

@@ -1,43 +1,68 @@
-import os
 import pathlib
-import textwrap
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from tcx2ics import Tcx2Ics, TcxData
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+BASE_START = datetime(2023, 6, 1, 7, 0, 0, tzinfo=timezone.utc)
+
+def _iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _make_tcx(tmp_path: pathlib.Path, sport="Biking", seconds=3600, metres=30000) -> str:
-    """Write a minimal valid TCX file and return its path."""
-    content = textwrap.dedent(f"""\
-        <?xml version="1.0" encoding="UTF-8"?>
-        <TrainingCenterDatabase
-            xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
-          <Activities>
-            <Activity Sport="{sport}">
-              <Id>2023-06-01T07:00:00Z</Id>
-              <Lap StartTime="2023-06-01T07:00:00Z" TotalTimeSeconds="{seconds}">
-                <DistanceMeters>{metres}</DistanceMeters>
-              </Lap>
-            </Activity>
-          </Activities>
-        </TrainingCenterDatabase>
-    """)
-    path = tmp_path / "workout.tcx"
+def _lap_xml(start: datetime, seconds: int, metres: int, points: int = 3) -> str:
+    rows = [
+        f'      <Lap StartTime="{_iso(start)}">',
+        f"        <TotalTimeSeconds>{seconds}</TotalTimeSeconds>",
+        f"        <DistanceMeters>{metres}</DistanceMeters>",
+        "        <Track>",
+    ]
+    for i in range(points):
+        frac = i / (points - 1) if points > 1 else 0.0
+        t = start + timedelta(seconds=seconds * frac)
+        d = metres * frac
+        lat = 46.500 + 0.001 * i
+        lon = 15.600 + 0.001 * i
+        rows.append(
+            f"          <Trackpoint><Time>{_iso(t)}</Time>"
+            f"<Position><LatitudeDegrees>{lat}</LatitudeDegrees>"
+            f"<LongitudeDegrees>{lon}</LongitudeDegrees></Position>"
+            f"<DistanceMeters>{d}</DistanceMeters></Trackpoint>"
+        )
+    rows.append("        </Track>")
+    rows.append("      </Lap>")
+    return "\n".join(rows)
+
+
+def _write_tcx(tmp_path: pathlib.Path, sport: str, laps_xml: str, name="workout.tcx") -> str:
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<TrainingCenterDatabase "
+        'xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">\n'
+        "  <Activities>\n"
+        f'    <Activity Sport="{sport}">\n'
+        "      <Id>2023-06-01T07:00:00Z</Id>\n"
+        f"{laps_xml}\n"
+        "    </Activity>\n"
+        "  </Activities>\n"
+        "</TrainingCenterDatabase>\n"
+    )
+    path = tmp_path / name
     path.write_text(content, encoding="utf-8")
     return str(path)
 
 
-# ---------------------------------------------------------------------------
-# 1. Missing file raises FileNotFoundError
-# ---------------------------------------------------------------------------
+def _make_tcx(tmp_path: pathlib.Path, sport="Biking", seconds=3600, metres=30000) -> str:
+    """Write a minimal valid single-lap TCX file and return its path."""
+    return _write_tcx(tmp_path, sport, _lap_xml(BASE_START, seconds, metres))
 
+
+def _make_multilap_tcx(tmp_path: pathlib.Path, laps) -> str:
+    """Write a multi-lap TCX file. *laps* is a list of (start, seconds, metres)."""
+    laps_xml = "\n".join(_lap_xml(start, seconds, metres) for start, seconds, metres in laps)
+    return _write_tcx(tmp_path, "Running", laps_xml, name="multilap.tcx")
 
 def test_missing_file_raises_error():
     """convert() must raise FileNotFoundError when the .tcx path does not exist."""
@@ -49,12 +74,6 @@ def test_missing_file_raises_error_on_parse():
     """parse() must raise FileNotFoundError when the .tcx path does not exist."""
     with pytest.raises(FileNotFoundError):
         Tcx2Ics().parse("does_not_exist.tcx")
-
-
-# ---------------------------------------------------------------------------
-# 2. Wrong extension raises ValueError
-# ---------------------------------------------------------------------------
-
 
 def test_wrong_extension_raises_error(tmp_path):
     """convert() must raise ValueError for a non-.tcx file extension."""
@@ -80,38 +99,47 @@ def test_no_extension_raises_error(tmp_path):
         Tcx2Ics().convert(str(bad), "out.ics")
 
 
-# ---------------------------------------------------------------------------
-# 3. Parsed start_time is a datetime
-# ---------------------------------------------------------------------------
+def test_malformed_xml_raises_value_error(tmp_path):
+    """Well-formed extension but broken XML must raise ValueError, not crash."""
+    bad = tmp_path / "broken.tcx"
+    bad.write_text("<TrainingCenterDatabase><Activities>", encoding="utf-8")
+    with pytest.raises(ValueError):
+        Tcx2Ics().parse(str(bad))
 
 
-def test_start_time_is_datetime(tmp_path, sample_tcx):
+def test_no_timing_data_raises_value_error(tmp_path):
+    """A file without usable trackpoint timing must raise a clear ValueError."""
+    path = tmp_path / "empty.tcx"
+    path.write_text(
+        '<?xml version="1.0"?>\n'
+        '<TrainingCenterDatabase '
+        'xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">'
+        "<Activities></Activities></TrainingCenterDatabase>",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        Tcx2Ics().parse(str(path))
+
+
+def test_start_time_is_datetime(sample_tcx):
     result = Tcx2Ics().parse(sample_tcx)
     assert isinstance(result.start_time, datetime), (
         f"Expected datetime, got {type(result.start_time)}"
     )
 
 
-def test_start_time_is_timezone_aware(tmp_path, sample_tcx):
+def test_start_time_is_timezone_aware(sample_tcx):
     result = Tcx2Ics().parse(sample_tcx)
-    assert result.start_time.tzinfo is not None, (
-        "start_time must be timezone-aware"
-    )
+    assert result.start_time.tzinfo is not None, "start_time must be timezone-aware"
 
 
-def test_start_time_value(tmp_path, sample_tcx):
+def test_start_time_value(sample_tcx):
     """The fixture activity starts at 2023-06-01T07:00:00Z."""
     result = Tcx2Ics().parse(sample_tcx)
     assert result.start_time.year == 2023
     assert result.start_time.month == 6
     assert result.start_time.day == 1
     assert result.start_time.hour == 7
-
-
-# ---------------------------------------------------------------------------
-# 4. Parsed distance_km is a positive float
-# ---------------------------------------------------------------------------
-
 
 def test_distance_is_positive_float(sample_tcx):
     result = Tcx2Ics().parse(sample_tcx)
@@ -135,16 +163,42 @@ def test_distance_zero_metres(tmp_path):
     assert result.distance_km == 0.0
 
 
-# ---------------------------------------------------------------------------
-# 5. Parsed sport is a non-empty string
-# ---------------------------------------------------------------------------
+def test_duration_value(tmp_path):
+    path = _make_tcx(tmp_path, seconds=3600)
+    result = Tcx2Ics().parse(path)
+    assert result.duration_seconds == 3600.0
 
+
+def test_multilap_sums_duration_and_distance(tmp_path):
+    """Duration spans all laps; distance is summed across every lap."""
+    path = _make_multilap_tcx(
+        tmp_path,
+        laps=[
+            (BASE_START, 1800, 5000),
+            (BASE_START + timedelta(minutes=30), 1800, 5000),
+        ],
+    )
+    result = Tcx2Ics().parse(path)
+    assert result.duration_seconds == 3600.0
+    assert abs(result.distance_km - 10.0) < 0.001
+
+
+def test_multilap_start_time_from_first_lap(tmp_path):
+    """start_time must come from the first lap."""
+    path = _make_multilap_tcx(
+        tmp_path,
+        laps=[
+            (BASE_START, 1800, 5000),
+            (BASE_START + timedelta(minutes=30), 1800, 5000),
+        ],
+    )
+    result = Tcx2Ics().parse(path)
+    assert result.start_time.hour == 7
+    assert result.start_time.minute == 0
 
 def test_sport_is_nonempty_string(sample_tcx):
     result = Tcx2Ics().parse(sample_tcx)
-    assert isinstance(result.sport, str), (
-        f"Expected str, got {type(result.sport)}"
-    )
+    assert isinstance(result.sport, str), f"Expected str, got {type(result.sport)}"
     assert len(result.sport) > 0, "sport must not be empty"
 
 
@@ -153,12 +207,6 @@ def test_sport_values(tmp_path, sport):
     path = _make_tcx(tmp_path, sport=sport)
     result = Tcx2Ics().parse(path)
     assert result.sport == sport
-
-
-# ---------------------------------------------------------------------------
-# 6. Output .ics is a structurally valid iCalendar file
-# ---------------------------------------------------------------------------
-
 
 def test_output_ics_file_is_created(sample_tcx, tmp_path):
     out = tmp_path / "workout.ics"
@@ -179,12 +227,6 @@ def test_ics_version_field(sample_tcx, tmp_path):
     Tcx2Ics().convert(sample_tcx, str(out))
     content = out.read_text(encoding="utf-8")
     assert "VERSION:2.0" in content, "ICS must declare VERSION:2.0"
-
-
-# ---------------------------------------------------------------------------
-# 7. VEVENT block contains DTSTART, DTEND, and SUMMARY
-# ---------------------------------------------------------------------------
-
 
 def test_vevent_present(sample_tcx, tmp_path):
     out = tmp_path / "workout.ics"
@@ -225,7 +267,19 @@ def test_vevent_summary_contains_sport(tmp_path):
         f"SUMMARY should contain sport name. Got: {summary_line!r}"
     )
 
-@pytest.mark.skip(reason="skip for now")
+
+def test_summary_comma_is_escaped(tmp_path):
+    """RFC 5545 TEXT values must escape commas."""
+    path = _make_tcx(tmp_path, sport="Running")
+    out = tmp_path / "workout.ics"
+    Tcx2Ics().convert(path, str(out))
+    summary_line = next(
+        l for l in out.read_text(encoding="utf-8").splitlines()
+        if l.startswith("SUMMARY:")
+    )
+    assert "\\," in summary_line, "comma in SUMMARY must be escaped as \\,"
+
+
 def test_dtend_is_after_dtstart(sample_tcx, tmp_path):
     """DTEND must be strictly after DTSTART."""
     out = tmp_path / "workout.ics"
@@ -236,16 +290,8 @@ def test_dtend_is_after_dtstart(sample_tcx, tmp_path):
     dtend = datetime.strptime(lines["DTEND"], "%Y%m%dT%H%M%SZ")
     assert dtend > dtstart, "DTEND must be after DTSTART"
 
-
-# ---------------------------------------------------------------------------
-# TcxData dataclass
-# ---------------------------------------------------------------------------
-
-
 def test_tcxdata_end_time_computed(sample_tcx):
     """end_time should equal start_time + duration."""
-    from datetime import timedelta
-
     result = Tcx2Ics().parse(sample_tcx)
     expected_end = result.start_time + timedelta(seconds=result.duration_seconds)
     assert result.end_time == expected_end
